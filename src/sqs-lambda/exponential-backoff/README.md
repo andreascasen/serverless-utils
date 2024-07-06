@@ -79,19 +79,17 @@ Eventually you get to a "last" dlq that **isn't** an event source to the lambda,
 Here is a CDK example:
 
 ```typescript
-import CDK, {
-	Duration,
-	aws_lambda as Lambda,
-	aws_lambda_event_sources,
-	aws_sqs,
-} from 'aws-cdk-lib'
+import { StackProps, Duration, Stack, App } from 'aws-cdk-lib'
+import * as Lambda from 'aws-cdk-lib/aws-lambda'
+import * as SQS from 'aws-cdk-lib/aws-sqs'
+import * as LambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources'
 
-type CustomProps extends CDK.StackProps {
-	exponentialBackoffSteps: CDK.Duration[]
+type CustomProps = StackProps & {
+	exponentialBackoffSteps: Duration[]
 }
 
-export class ExponentialBackoffStack extends CDK.Stack {
-	constructor(scope: CDK.App, id: string, props?: CDK.StackProps) {
+export class ExponentialBackoffStack extends Stack {
+	constructor(scope: App, id: string, props: CustomProps) {
 		super(scope, id, props)
 
 		const eventHandler = new Lambda.Function(this, 'eventHandler', {
@@ -102,30 +100,36 @@ export class ExponentialBackoffStack extends CDK.Stack {
 			handler: 'eventHandler.handler',
 		})
 
-		const operatorQueue = new aws_sqs.Queue(this, 'operatorQueue', {
+		const operatorQueue = new SQS.Queue(this, 'operatorQueue', {
 			queueName: 'operatorQueue',
 		})
 
-		const queues: aws_sqs.Queue[] = []
-		exponentialBackoffSteps
-			.reverse()
-			.forEach((duration, index) => {
-				queues.push(this.createHandlerSqsEventSource({
-					name: `step${exponentialBackoffSteps.lenght - index}`,
-					dlq: index === 0 ? operatorQueue : queues[index - 1],
-					delay: duration
-				}))
-			})
+		const queues: SQS.Queue[] = []
+		props.exponentialBackoffSteps.reverse().forEach((duration, index) => {
+			queues.push(
+				this.createHandlerSqsEventSource(
+					{
+						name: `step${props.exponentialBackoffSteps.length - index}`,
+						dlq: index === 0 ? operatorQueue : queues[index - 1],
+						delay: duration,
+					},
+					eventHandler
+				)
+			)
+		})
 	}
 
-	createHandlerSqsEventSource({
-		name: string,
-		dlq: aws_sqs.Queue,
-		delay?: CDK.Duration
-	}, eventHandler: aws_lambda.Function): aws_sqs.Queue {
-		const queue =  new aws_sqs.Queue(this, name, {
+	createHandlerSqsEventSource(
+		{
+			name,
+			dlq,
+			delay,
+		}: { name: string; dlq: SQS.Queue; delay?: Duration | undefined },
+		eventHandler: Lambda.Function
+	): SQS.Queue {
+		const queue = new SQS.Queue(this, name, {
 			queueName: name,
-			deliveryDelay: delay || CDK.Duration.seconds(0),
+			deliveryDelay: delay || Duration.seconds(0),
 			deadLetterQueue: {
 				queue: dlq,
 				maxReceiveCount: 1,
@@ -134,10 +138,11 @@ export class ExponentialBackoffStack extends CDK.Stack {
 
 		queue.grantConsumeMessages(eventHandler)
 		eventHandler.addEventSource(
-			new aws_lambda_event_sources.SqsEventSource(queue, {
+			new LambdaEventSources.SqsEventSource(queue, {
 				batchSize: 1,
 			})
 		)
+		return queue
 	}
 }
 ```
